@@ -1,0 +1,23 @@
+name: Validate THERASON preview
+
+on:
+  push:
+    branches:
+      - integration/lovable-design
+  pull_request:
+    branches:
+      - integration/lovable-design
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check application JavaScript
+        run: node --check app.js
+      - name: Ensure legacy brand is absent from active shell
+        run: |
+          ! grep -Eiq 'SPTI|spti' app.js index.html style.css

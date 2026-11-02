@@ -77,7 +77,7 @@
   }
   async function showTopics(id,box){
     box.innerHTML='<div class="loading">جارٍ تحميل الوحدات…</div>';const s=await one("subjects","name_ar,name_en","id",id);const {data,error}=await db.from("topics").select("id,name_ar,name_en,position").eq("subject_id",id).order("position");if(error)throw error;
-    box.innerHTML='<section class="panel topic-panel"><div class="panel-head"><div><h3>'+esc(s?.name_ar||"المادة")+'</h3><p>'+esc(s?.name_en||"")+'</p></div><span class="pill">'+(data||[]).length+' وحدة</span></div>'+(data||[]).map(t=>'<button class="topic-row" data-topic="'+t.id+'"><span>▹</span><b>'+esc(t.name_ar)+'</b><small>'+esc(t.name_en||"")+'</small><i>←</i></button>').join("")||'<p class="muted">لا توجد وحدات منشورة لهذه المادة بعد.</p>'+'<div id="questionArea"></div></section>';
+    box.innerHTML='<section class="panel topic-panel"><div class="panel-head"><div><h3>'+esc(s?.name_ar||"المادة")+'</h3><p>'+esc(s?.name_en||"")+'</p></div><span class="pill">'+(data||[]).length+' وحدة</span></div>'+((data||[]).map(t=>'<button class="topic-row" data-topic="'+t.id+'"><span>▹</span><b>'+esc(t.name_ar)+'</b><small>'+esc(t.name_en||"")+'</small><i>←</i></button>').join("")||'<p class="muted">لا توجد وحدات منشورة لهذه المادة بعد.</p>')+'<div id="questionArea"></div></section>';
     box.querySelectorAll("[data-topic]").forEach(b=>b.onclick=()=>showTopicQuestions(b.dataset.topic,box.querySelector("#questionArea")));
   }
   async function showTopicQuestions(id,box){

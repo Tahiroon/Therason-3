@@ -1,4 +1,4 @@
 window.TH_CONFIG = {
-  url: "REPLACE_WITH_PROJECT_URL",
+  url: "https://fcmatdnueuyisypmstam.supabase.co",
   key: "sb_publishable_xvDbODh3NfJLUkmFyrp15g_I5Sda9pm"
 };

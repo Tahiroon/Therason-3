@@ -1,41 +1,37 @@
 # THERASON integration status
 
-## Non-negotiable source of truth
-- Supabase project: Therason 3 (existing project).
-- Keep existing Auth users, student registry, profiles, roles, wallets, XP, lessons, questions, exams, and results.
-- Do not apply the Lovable project's database migrations to the production Therason project.
-- Do not copy the Lovable repository's `.env`, secrets, auth configuration, or database schema.
-
-## Repositories
-- Production foundation: `Tahiroon/Therason-3`.
-- UI reference: `Tahiroon/sudan-physio-clinic-quest`.
-
-## Verified current foundation
-- Existing app is a small RTL HTML/CSS/JS client.
-- Existing login calls Supabase Auth and maps student IDs matching `thr\d{6}` to `@students.therason.app`.
-- Existing authorization reads `user_roles`; super_admin is recognized.
-- Existing student home reads `profiles` and `wallets`.
-- Existing admin screens read/write `institutions` and `subjects`.
-- Existing public Supabase client configuration is in `config.js`; never add service-role keys to browser code.
+## Source of truth and safety
+- Existing Supabase project: `Therason 3` (`fcmatdnueuyisypmstam`).
+- Existing Auth, student registry, profiles, user roles, wallets, XP events, academic catalog, question bank, exams, attempts and results remain authoritative.
+- No production schema migrations or data mutations were made as part of this UI integration.
+- No Lovable `.env`, secrets, service-role keys, auth configuration or database migrations were copied.
+- All work is isolated to `integration/lovable-design`; `main` is untouched.
 
 ## UI reference
-- Lovable app uses React 19, Vite 8, TanStack Router/Start, Tailwind 4, and Supabase JS.
-- Its root shell provides Arabic RTL, Readex Pro, shared header/footer, i18n, and React Query.
-- Its home page provides the academic landing experience and specialty tracks.
-- Its authentication and database implementation must be adapted to Therason's existing tables and policies.
+- Reference repository: `Tahiroon/sudan-physio-clinic-quest`.
+- Adapted its THERASON visual direction, Arabic RTL, Readex Pro, student dashboard, learning navigation and clinical simulation concepts.
+- Lovable's separate Cloud Auth and Drizzle schema were intentionally not imported because they do not match the existing Therason 3 schema.
 
-## Integration rules
-1. Port visual components and page structure in small reviewed increments.
-2. Keep Therason Auth as the only authentication authority.
-3. Use a typed data-access adapter for Therason tables; map UI terminology to the existing schema.
-4. Keep student ID + password login; no public self-registration.
-5. Check role and RLS on the server/database for every privileged action; hiding admin UI is not authorization.
-6. Do not mutate production schema or student data during UI integration.
-7. Never expose secrets, service-role keys, passwords, or activation peppers in frontend files.
-8. Build and test before proposing a merge to `main`.
+## Implemented in this branch
+- Responsive THERASON student/admin application shell and navigation.
+- Existing student-ID + password Supabase Auth flow retained.
+- Student home, wallet/XP/level display, profile, progress history and announcements.
+- Academic library based on existing `subjects` and `topics` tables.
+- Published question practice without exposing answer keys to students.
+- Published exams using existing `start_attempt` and `submit_attempt` RPCs.
+- Admin overview, institution management, student registry view, subjects/topics, question authoring, exam authoring and announcements.
+- A lightweight educational clinical reasoning simulator adapted from the Lovable idea; its demo cases are local and do not award persisted XP.
 
-## First implementation slice
-- Establish a React/Vite app shell in this integration branch.
-- Port the shared RTL shell and public landing page.
-- Replace Lovable auth/data assumptions with the existing Therason Supabase client and schema.
-- Preserve current login, student, and super-admin workflows while migrating page by page.
+## Known limitations requiring a separate, deliberate phase
+- Therason 3 has no `lessons`, `shop_items`, `purchases`, or clinical case completion tables matching the Lovable app. The learning library therefore uses the real `subjects`/`topics`/`questions` schema; the Lovable equipment shop and persistent clinic progression are not enabled.
+- The current `profiles` table had zero rows at the time of inspection while `student_registry` had 10 rows. Students without a profile linked to their Auth user will see the account-pending screen. Do not bypass this with client-side profile creation; finish the approved activation workflow/Edge Function integration.
+- Student registry is currently view-only in this UI; bulk import/activation remains an administrative workflow.
+- Admin actions are still constrained by existing Supabase RLS. A visible control does not imply the current account has permission.
+- This static HTML/CSS/JS branch has not yet been run through a Vercel Preview build or end-to-end browser test in this environment.
+
+## Next verification
+1. Deploy `integration/lovable-design` as a Vercel Preview, not Production.
+2. Test with the existing super-admin account.
+3. Test a real student account that has a matching row in `profiles`.
+4. Verify exam start and submit RPCs, and confirm RLS blocks unauthorized admin operations.
+5. Only after preview acceptance, discuss a separate production merge.

@@ -1,70 +1,155 @@
 (() => {
   const cfg = window.TH_CONFIG || {};
-  const app = document.getElementById("app");
+  const root = document.getElementById("app");
   const logoutBtn = document.getElementById("logoutBtn");
-  const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
-  const toEmail = input => {
-    const value = input.trim().toLowerCase();
-    return /^thr\d{6}$/i.test(value) ? value + "@students.therason.app" : value;
-  };
-  if (!cfg.url || cfg.url === "REPLACE_WITH_PROJECT_URL" || !cfg.key) {
-    app.innerHTML = '<section class="card"><h1 class="title">THERASON</h1><p class="error">المنصة تحتاج إعداد رابط Supabase أولاً.</p></section>';
-    return;
-  }
-  const client = window.supabase.createClient(cfg.url, cfg.key);
-  const setLogout = show => logoutBtn.classList.toggle("hidden", !show);
-  logoutBtn.addEventListener("click", async () => { await client.auth.signOut(); setLogout(false); renderLogin(); });
-  const renderLogin = () => {
-    setLogout(false);
-    app.innerHTML = '<div class="welcome-layout"><section class="intro"><span class="eyebrow">منصة تعليمية لطلاب العلاج الطبيعي</span><h1>حيث يبدأ<br><em>التفكير السريري</em></h1><p>مساحة تعليمية تجمع المعرفة الطبية والتدريب العملي، وتساعدك على تطوير مهاراتك السريرية خطوة بخطوة.</p><div class="feature-row"><span class="feature"><i class="feature-icon">✦</i> تعلم تفاعلي</span><span class="feature"><i class="feature-icon">⌘</i> تفكير سريري</span><span class="feature"><i class="feature-icon">＋</i> نمو مهني</span></div></section><section class="card"><h1 class="title">مرحباً بك</h1><p class="muted">سجّل دخولك إلى بوابة THERASON التعليمية.</p><form id="loginForm"><div class="field"><label for="identity">الرقم التعريفي للطالب</label><input id="identity" autocomplete="username" required></div><div class="field"><label for="password">كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required></div><p id="loginError" class="error hidden"></p><button class="btn" type="submit">دخول</button></form></section></div>';
-    document.getElementById("loginForm").addEventListener("submit", login);
-  };
-  async function login(e){
-    e.preventDefault();
-    const identity = document.getElementById("identity").value;
-    const password = document.getElementById("password").value;
-    const error = document.getElementById("loginError");
-    error.classList.add("hidden");
-    const { error: authError } = await client.auth.signInWithPassword({email:toEmail(identity),password});
-    if(authError){ error.textContent="تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى."; error.classList.remove("hidden"); return; }
-    await loadAccount();
-  }
-  async function loadAccount(){
-    app.innerHTML='<div class="loading">جارٍ تحميل حسابك…</div>';
-    const {data:{user}}=await client.auth.getUser();
-    if(!user){renderLogin();return;}
-    const [{data:roles},{data:profile}] = await Promise.all([
-      client.from("user_roles").select("role").eq("user_id",user.id),
-      client.from("profiles").select("*").eq("user_id",user.id).maybeSingle()
+  const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const emailFor = v => { const x=v.trim().toLowerCase(); return /^thr\d{6}$/i.test(x) ? x+"@students.therason.app" : x; };
+  if (!cfg.url || !cfg.key || !window.supabase) { root.innerHTML='<div class="panel"><h2>تعذر الاتصال</h2><p>تحقق من إعدادات Supabase.</p></div>'; return; }
+  const db = window.supabase.createClient(cfg.url,cfg.key);
+  let user=null, profile=null, roles=[], wallet={xp:0,coins:0,level:1}, active="home", currentExam=null, attemptId=null, examQuestions=[], answers={}, timer=null;
+  const isSA=()=>roles.some(x=>x.role==="super_admin");
+  const isAdmin=()=>isSA()||roles.some(x=>x.role==="admin");
+  const isContent=()=>roles.some(x=>["admin","super_admin"].includes(x.role));
+  const toast=(msg,bad=false)=>{let n=document.getElementById("toast");if(!n){n=document.createElement("div");n.id="toast";n.className="toast";document.body.append(n)}n.textContent=msg;n.classList.toggle("bad",bad);n.classList.add("show");setTimeout(()=>n.classList.remove("show"),2800)};
+  const q=async(table,cols="*")=>{const {data,error}=await db.from(table).select(cols);if(error)throw error;return data||[]};
+  const one=async(table,cols,field,value)=>{const {data,error}=await db.from(table).select(cols).eq(field,value).maybeSingle();if(error)throw error;return data};
+  const loadAccount=async()=>{
+    root.innerHTML='<div class="loading">جارٍ تجهيز مساحتك التعليمية…</div>';
+    const {data:{user:u}}=await db.auth.getUser(); if(!u){login();return} user=u;
+    const [rr,pp,ww]=await Promise.all([
+      db.from("user_roles").select("role,scope_type,scope_id").eq("user_id",u.id),
+      db.from("profiles").select("*,institutions(name_ar,name_en),specialties(name_ar,name_en),cohorts(name)").eq("id",u.id).maybeSingle(),
+      db.from("wallets").select("*").eq("user_id",u.id).maybeSingle()
     ]);
-    const isSuper=(roles||[]).some(r=>r.role==="super_admin");
-    if(isSuper){setLogout(true);renderAdmin();return;}
-    if(profile){setLogout(true);renderStudent(profile);return;}
-    setLogout(true);
-    app.innerHTML='<section class="card"><h1 class="title">حسابك غير مفعّل</h1><p class="muted">تم تسجيل الدخول بنجاح، لكن الحساب لم يُفعّل داخل المنصة بعد.</p></section>';
+    roles=rr.data||[];profile=pp.data;wallet=ww.data||wallet;
+    if(rr.error) console.warn(rr.error); if(pp.error)console.warn(pp.error);
+    if(!profile&&!isAdmin()){logoutBtn.classList.remove("hidden");root.innerHTML='<section class="panel empty"><div class="empty-icon">◈</div><h2>حسابك بانتظار التفعيل</h2><p>تم التحقق من كلمة المرور، لكن لا يوجد ملف طالب مرتبط بهذا الحساب حتى الآن. تواصل مع إدارة THERASON.</p></section>';return}
+    logoutBtn.classList.remove("hidden");active=isAdmin()?"overview":"home";shell();await render();
+  };
+  function login(){
+    logoutBtn.classList.add("hidden");
+    root.innerHTML='<div class="login-layout"><section class="login-story"><span class="kicker">THERASON · LEARN · REASON · PRACTICE</span><h1>حيث يبدأ<br><em>التفكير السريري</em></h1><p>منصة تعليمية متكاملة لطلاب العلاج الطبيعي، تجمع المحتوى الأكاديمي والاختبارات والتدريب السريري في مساحة واحدة.</p><div class="story-points"><span>✦ تعلم منظم</span><span>⌘ تفكير سريري</span><span>＋ تطور مستمر</span></div></section><section class="login-card"><div class="brand-mark">T</div><p class="eyebrow">بوابة THERASON التعليمية</p><h2>مرحباً بعودتك</h2><p class="muted">استخدم الرقم التعريفي وكلمة المرور الصادرة من الإدارة.</p><form id="loginForm"><label>الرقم التعريفي للطالب</label><input id="identity" autocomplete="username" placeholder="THR000000" required dir="ltr"><label>كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required><p id="loginError" class="error hidden"></p><button class="primary-btn wide">تسجيل الدخول <span>←</span></button></form><small class="muted">لا يوجد تسجيل عام للحسابات.</small></section></div>';
+    document.getElementById("loginForm").addEventListener("submit",async e=>{e.preventDefault();const btn=e.currentTarget.querySelector("button");btn.disabled=true;btn.textContent="جارٍ التحقق…";const identity=document.getElementById("identity").value,password=document.getElementById("password").value;const {error}=await db.auth.signInWithPassword({email:emailFor(identity),password});if(error){const p=document.getElementById("loginError");p.textContent="بيانات الدخول غير صحيحة أو تعذر الاتصال.";p.classList.remove("hidden");btn.disabled=false;btn.textContent="تسجيل الدخول";return}await loadAccount()});
   }
-  async function renderStudent(profile){
-    const {data:wallet}=await client.from("wallets").select("*").eq("user_id",profile.user_id).maybeSingle();
-    const level=wallet?.level ?? 1, xp=wallet?.xp ?? 0, coins=wallet?.coins ?? 0;
-    app.innerHTML='<section class="card"><h1 class="title">أهلاً '+escapeHtml(profile.display_name||profile.username||"بك")+'</h1><p class="muted">رحلتك في التفكير الإكلينيكي تبدأ هنا.</p><div class="stats"><div class="stat"><b>'+escapeHtml(level)+'</b>المستوى</div><div class="stat"><b>'+escapeHtml(xp)+'</b>XP</div><div class="stat"><b>'+escapeHtml(coins)+'</b>عملات</div></div></section>';
+  function shell(){
+    const name=profile?.display_name||"مرحباً بك";
+    const nav=isAdmin()?[
+      ["overview","نظرة عامة","⌂"],["institutions","الجامعات","▦"],["students","الطلاب","♙"],["academic","المواد والوحدات","▤"],["questions","بنك الأسئلة","✎"],["exams","الاختبارات","◷"],["announcements","الإعلانات","◉"],["roles","الصلاحيات","⚙"]
+    ]:[["home","الرئيسية","⌂"],["learn","التعلم والمحاضرات","▤"],["exams","الاختبارات","◷"],["clinic","العيادة الافتراضية","✚"],["progress","إنجازاتي","↗"],["profile","ملفي","♙"]];
+    root.innerHTML='<div class="app-shell"><aside class="sidebar"><a class="side-brand"><span class="brand-mark">T</span><span><b>THERASON</b><small>Clinical thinking platform</small></span></a><div class="side-user"><div class="avatar">'+esc((name||"ط").slice(0,1))+'</div><div><b>'+esc(name)+'</b><small>'+ (isAdmin()?"إدارة المنصة":"طالب علاج طبيعي")+'</small></div></div><nav class="side-nav">'+nav.map(n=>'<button data-page="'+n[0]+'" class="'+(active===n[0]?"selected":"")+'"><i>'+n[2]+'</i>'+n[1]+'</button>').join("")+'</nav><div class="side-bottom"><span>THERASON · v1.0</span><button id="sideLogout">↪ تسجيل الخروج</button></div></aside><main class="main-area"><header class="app-top"><button id="mobileMenu" class="mobile-menu">☰</button><div><span class="eyebrow">مساحتك التعليمية</span><h1>'+esc(nav.find(n=>n[0]===active)?.[1]||"THERASON")+'</h1></div><div class="top-user"><span class="coin">✦ '+esc(wallet.xp||0)+' XP</span><span class="coin gold">◈ '+esc(wallet.coins||0)+'</span></div></header><section id="page" class="page-content"><div class="loading">جارٍ التحميل…</div></section></main></div>';
+    root.querySelectorAll("[data-page]").forEach(b=>b.onclick=async()=>{active=b.dataset.page;root.querySelectorAll("[data-page]").forEach(x=>x.classList.toggle("selected",x===b));root.querySelector(".app-top h1").textContent=b.textContent.trim();await render();document.querySelector(".sidebar").classList.remove("open")});
+    document.getElementById("sideLogout").onclick=signOut;document.getElementById("mobileMenu").onclick=()=>document.querySelector(".sidebar").classList.toggle("open");
   }
-  async function renderAdmin(){
-    app.innerHTML='<section class="card"><h1 class="title">لوحة الإدارة</h1><div class="tabs"><button class="tab active" data-tab="institutions">الجامعات</button><button class="tab" data-tab="subjects">المواد</button></div><div id="adminContent"></div></section>';
-    document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active"); b.dataset.tab==="institutions"?showInstitutions():showSubjects();}));
-    showInstitutions();
+  async function signOut(){if(timer)clearInterval(timer);await db.auth.signOut();user=null;profile=null;roles=[];login()}
+  const page=()=>document.getElementById("page");
+  const heading=(title,sub,action="")=>'<div class="page-heading"><div><h2>'+title+'</h2><p>'+sub+'</p></div>'+action+'</div>';
+  const card=(icon,title,desc,action)=>'<button class="feature-card" data-go="'+action+'"><span class="feature-icon">'+icon+'</span><b>'+title+'</b><small>'+desc+'</small><span class="feature-arrow">←</span></button>';
+  async function render(){
+    const el=page();if(!el)return;el.innerHTML='<div class="loading">جارٍ تحميل البيانات…</div>';
+    try{
+      if(active==="home")await studentHome(el);
+      else if(active==="learn")await learnPage(el);
+      else if(active==="exams")await examsPage(el);
+      else if(active==="clinic")clinicPage(el);
+      else if(active==="progress")await progressPage(el);
+      else if(active==="profile")profilePage(el);
+      else if(active==="overview")await adminOverview(el);
+      else if(active==="institutions")await institutionsPage(el);
+      else if(active==="students")await studentsPage(el);
+      else if(active==="academic")await academicPage(el);
+      else if(active==="questions")await questionsPage(el);
+      else if(active==="announcements")await announcementsPage(el);
+      else if(active==="roles")await rolesPage(el);
+    }catch(e){console.error(e);el.innerHTML='<div class="panel error-panel"><h3>لم نتمكن من تحميل هذا القسم</h3><p>'+esc(e.message||"تحقق من الاتصال والصلاحيات.")+'</p><button class="secondary-btn" id="retry">إعادة المحاولة</button></div>';el.querySelector("#retry").onclick=render}
+    el.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>{active=b.dataset.go;shell();render()});
   }
-  async function showInstitutions(){
-    const box=document.getElementById("adminContent"); box.innerHTML='<div class="loading">جارٍ التحميل…</div>';
-    const {data,error}=await client.from("institutions").select("id,code,name_ar").order("code");
-    if(error){box.innerHTML='<p class="error">تعذر تحميل البيانات.</p>';return;}
-    box.innerHTML='<div class="list">'+(data||[]).map(x=>'<div class="item">'+escapeHtml(x.code)+' — '+escapeHtml(x.name_ar)+'</div>').join("")+'</div><form id="addInstitution"><div class="row"><div class="field"><label>الكود</label><input id="instCode" pattern="\\d{2}" maxlength="2" required></div><div class="field"><label>اسم الجامعة</label><input id="instName" required></div></div><button class="btn" type="submit">إضافة جامعة</button><p class="error hidden" id="instError"></p></form>';
-    document.getElementById("addInstitution").addEventListener("submit",async e=>{e.preventDefault();const {error}=await client.from("institutions").insert({code:document.getElementById("instCode").value,name_ar:document.getElementById("instName").value.trim()});if(error){document.getElementById("instError").textContent="تعذر إضافة الجامعة.";document.getElementById("instError").classList.remove("hidden");return;}showInstitutions();});
+  async function studentHome(el){
+    const [subjects,exams,ann]=await Promise.all([q("subjects","id,name_ar,name_en,academic_level"),db.from("exams").select("id,title_ar,title_en,mode,duration_min").eq("status","published"),db.from("announcements").select("id,title,body,created_at").order("created_at",{ascending:false}).limit(4)]);
+    const {data:topics}=await db.from("topics").select("id").limit(500);
+    const pct=Math.min(100,Math.round((Number(wallet.xp||0)%100)));
+    el.innerHTML='<section class="welcome-banner"><div><span class="kicker">THERASON · YOUR LEARNING SPACE</span><h2>أهلاً '+esc(profile?.display_name||"بك")+'</h2><p>استمر في التعلم، اختبر فهمك، وطوّر تفكيرك السريري خطوة بخطوة.</p></div><div class="banner-mark">T</div></section><div class="stat-grid"><div class="stat-card"><small>المستوى</small><b>'+esc(wallet.level||1)+'</b><span>Level</span></div><div class="stat-card"><small>نقاط الخبرة</small><b>'+esc(wallet.xp||0)+'</b><span>XP</span></div><div class="stat-card"><small>العملات</small><b>'+esc(wallet.coins||0)+'</b><span>Coins</span></div><div class="stat-card"><small>المواد المتاحة</small><b>'+subjects.length+'</b><span>Subjects</span></div></div><div class="section-title"><h3>ابدأ رحلتك</h3><span>اختر ما تريد إنجازه الآن</span></div><div class="feature-grid">'+card("▤","المواد والمحاضرات","تصفح المواد والوحدات التعليمية","learn")+card("◷","الاختبارات","تدرّب وقِس مستوى فهمك","exams")+card("✚","العيادة الافتراضية","تدرب على اتخاذ القرار السريري","clinic")+card("↗","إنجازاتي","تابع تقدمك ونقاطك","progress")+'</div><div class="two-col"><section class="panel"><div class="panel-head"><h3>آخر الإعلانات</h3></div>'+(ann.data||[]).map(a=>'<article class="notice"><b>'+esc(a.title)+'</b><p>'+esc(a.body||"")+'</p></article>').join("")||'<p class="muted">لا توجد إعلانات حالياً.</p>'+'</section><section class="panel"><div class="panel-head"><h3>مؤشر تقدمك</h3></div><div class="progress-ring"><b>'+pct+'%</b></div><p class="muted center">كل اختبار ومراجعة تقربك من الإتقان.</p></section></div>';
   }
-  async function showSubjects(){
-    const box=document.getElementById("adminContent"); box.innerHTML='<div class="loading">جارٍ التحميل…</div>';
-    const [{data:subjects},{data:specialties}]=await Promise.all([client.from("subjects").select("*").order("name_ar"),client.from("specialties").select("id,name_ar")]);
-    box.innerHTML='<div class="list">'+(subjects||[]).map(x=>'<div class="item">'+escapeHtml(x.name_ar||x.name||"—")+'</div>').join("")+'</div><form id="addSubject"><div class="field"><label>اسم المادة</label><input id="subjectName" required></div><div class="field"><label>التخصص</label><select id="specialtyId" required><option value="">اختر</option>'+(specialties||[]).map(x=>'<option value="'+escapeHtml(x.id)+'">'+escapeHtml(x.name_ar)+'</option>').join("")+'</select></div><div class="field"><label>السنة</label><input id="subjectYear" type="number" min="1" required></div><button class="btn" type="submit">إضافة مادة</button><p class="error hidden" id="subjectError"></p></form>';
-    document.getElementById("addSubject").addEventListener("submit",async e=>{e.preventDefault();const payload={name_ar:document.getElementById("subjectName").value.trim(),specialty_id:document.getElementById("specialtyId").value,year:Number(document.getElementById("subjectYear").value)};const {error}=await client.from("subjects").insert(payload);if(error){document.getElementById("subjectError").textContent="تعذر إضافة المادة. تحقق من الصلاحيات وبنية الجدول.";document.getElementById("subjectError").classList.remove("hidden");return;}showSubjects();});
+  async function learnPage(el){
+    const subjects=await q("subjects","id,name_ar,name_en,academic_level,specialty_id");
+    el.innerHTML=heading("المكتبة التعليمية","المواد والوحدات والمحاضرات المتاحة داخل المنصة.")+'<div class="search-row"><input id="subjectSearch" placeholder="ابحث عن مادة…"><span>'+subjects.length+' مادة</span></div><div class="subject-grid" id="subjectGrid">'+subjects.map(s=>'<button class="subject-card" data-subject="'+s.id+'"><span class="subject-icon">▤</span><div><b>'+esc(s.name_ar)+'</b><small dir="ltr">'+esc(s.name_en||"")+'</small><small>المستوى '+esc(s.academic_level||"—")+'</small></div><span>←</span></button>').join("")+'</div><div id="topicArea"></div>';
+    el.querySelector("#subjectSearch").oninput=e=>el.querySelectorAll("[data-subject]").forEach(b=>b.hidden=!b.textContent.toLowerCase().includes(e.target.value.toLowerCase()));
+    el.querySelectorAll("[data-subject]").forEach(b=>b.onclick=()=>showTopics(b.dataset.subject,el.querySelector("#topicArea")));
   }
-  client.auth.getSession().then(({data})=>data.session?loadAccount():renderLogin());
+  async function showTopics(id,box){
+    box.innerHTML='<div class="loading">جارٍ تحميل الوحدات…</div>';const s=await one("subjects","name_ar,name_en","id",id);const {data,error}=await db.from("topics").select("id,name_ar,name_en,position").eq("subject_id",id).order("position");if(error)throw error;
+    box.innerHTML='<section class="panel topic-panel"><div class="panel-head"><div><h3>'+esc(s?.name_ar||"المادة")+'</h3><p>'+esc(s?.name_en||"")+'</p></div><span class="pill">'+(data||[]).length+' وحدة</span></div>'+(data||[]).map(t=>'<button class="topic-row" data-topic="'+t.id+'"><span>▹</span><b>'+esc(t.name_ar)+'</b><small>'+esc(t.name_en||"")+'</small><i>←</i></button>').join("")||'<p class="muted">لا توجد وحدات منشورة لهذه المادة بعد.</p>'+'<div id="questionArea"></div></section>';
+    box.querySelectorAll("[data-topic]").forEach(b=>b.onclick=()=>showTopicQuestions(b.dataset.topic,box.querySelector("#questionArea")));
+  }
+  async function showTopicQuestions(id,box){
+    box.innerHTML='<div class="loading">جارٍ تحميل المحتوى…</div>';const {data,error}=await db.from("questions").select("id,stem_ar,stem_en,explanation_ar,explanation_en,difficulty,question_options(id,text_ar,text_en,position)").eq("topic_id",id).eq("status","published").order("created_at");if(error)throw error;
+    box.innerHTML=(data||[]).map((x,i)=>'<article class="question-card"><span class="pill">سؤال '+(i+1)+'</span><h4>'+esc(x.stem_ar)+'</h4><p dir="ltr">'+esc(x.stem_en||"")+'</p><div class="options">'+(x.question_options||[]).sort((a,b)=>a.position-b.position).map(o=>'<button class="option" data-option="'+o.id+'">'+esc(o.text_ar||o.text_en)+'</button>').join("")+'</div><p class="answer-feedback hidden"></p></article>').join("")||'<p class="muted">لا توجد أسئلة منشورة في هذه الوحدة.</p>';
+    box.querySelectorAll(".question-card").forEach((c,i)=>{const qs=data[i];c.querySelectorAll("[data-option]").forEach(b=>b.onclick=async()=>{const {data:ans}=await db.from("question_answers").select("option_id").eq("question_id",qs.id);const correct=(ans||[]).some(a=>a.option_id===b.dataset.option);c.querySelectorAll(".option").forEach(x=>x.disabled=true);b.classList.add(correct?"correct":"incorrect");const f=c.querySelector(".answer-feedback");f.textContent=correct?"إجابة صحيحة ✓":("ليست الإجابة الصحيحة. "+(qs.explanation_ar||"راجع شرح المحاضرة."));f.classList.remove("hidden")})});
+  }
+  async function examsPage(el){
+    if(currentExam){examRunner(el);return}
+    const {data,error}=await db.from("exams").select("id,title_ar,title_en,mode,duration_min,subject_id,subjects(name_ar)").eq("status","published").order("created_at",{ascending:false});if(error)throw error;
+    el.innerHTML=heading("الاختبارات","اختبارات تدريبية ومؤقتة لقياس مستواك.")+'<div class="exam-grid">'+(data||[]).map(x=>'<article class="exam-card"><span class="pill">'+(x.mode==="timed"?"اختبار بوقت":"تدريب")+'</span><h3>'+esc(x.title_ar)+'</h3><p dir="ltr">'+esc(x.title_en||"")+'</p><small>'+esc(x.subjects?.name_ar||"اختبار عام")+' · '+(x.duration_min?x.duration_min+" دقيقة":"بدون وقت")+'</small><button class="primary-btn wide" data-exam="'+x.id+'">ابدأ الاختبار ←</button></article>').join("")+'</div>'||'<div class="panel empty">لا توجد اختبارات منشورة حالياً.</div>';
+    el.querySelectorAll("[data-exam]").forEach(b=>b.onclick=()=>startExam(b.dataset.exam));
+  }
+  async function startExam(id){
+    const {data,error}=await db.rpc("start_attempt",{p_exam:id});if(error){toast(error.message,true);return}attemptId=data;currentExam=id;answers={};await examsPage(page());
+  }
+  async function examRunner(el){
+    if(!examQuestions.length){const {data,error}=await db.from("exam_questions").select("position,questions(id,stem_ar,stem_en,question_options(id,text_ar,text_en,position))").eq("exam_id",currentExam).order("position");if(error)throw error;examQuestions=(data||[]).map(x=>x.questions).filter(Boolean)}
+    el.innerHTML=heading("الاختبار الجاري","اختر إجابة واحدة لكل سؤال.")+'<div class="exam-runner">'+examQuestions.map((x,i)=>'<article class="question-card"><span class="pill">السؤال '+(i+1)+' من '+examQuestions.length+'</span><h3>'+esc(x.stem_ar)+'</h3><p dir="ltr">'+esc(x.stem_en||"")+'</p><div class="options">'+(x.question_options||[]).sort((a,b)=>a.position-b.position).map(o=>'<button class="option '+(answers[x.id]===o.id?"picked":"")+'" data-q="'+x.id+'" data-o="'+o.id+'">'+esc(o.text_ar||o.text_en)+'</button>').join("")+'</div></article>').join("")+'<button class="primary-btn wide" id="submitExam">تسليم الإجابات</button><button class="text-btn" id="cancelExam">إلغاء الاختبار</button></div>';
+    el.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>{answers[b.dataset.q]=b.dataset.o;examRunner(el)});
+    el.querySelector("#cancelExam").onclick=()=>{currentExam=null;attemptId=null;examQuestions=[];answers={};examsPage(el)};
+    el.querySelector("#submitExam").onclick=async()=>{const payload=examQuestions.map(x=>({question_id:x.id,option_id:answers[x.id]||null}));const {data,error}=await db.rpc("submit_attempt",{p_attempt:attemptId,p_answers:payload});if(error){toast(error.message,true);return}currentExam=null;attemptId=null;examQuestions=[];answers={};wallet=(await one("wallets","*","user_id",user.id))||wallet;el.innerHTML='<section class="panel result-panel"><div class="result-mark">✓</div><h2>اكتمل الاختبار</h2><div class="result-score">'+esc(data.score)+'%</div><p>الإجابات الصحيحة: '+esc(data.correct)+' من '+esc(data.total)+'</p><p class="pill">حصلت على '+esc(data.xp)+' XP</p><button class="primary-btn wide" id="backExams">العودة للاختبارات</button></section>';el.querySelector("#backExams").onclick=()=>examsPage(el);};
+  }
+  function clinicPage(el){
+    const cases=[{id:"lbp",title:"Mechanical Low Back Pain",patient:"أحمد، 42 عاماً",complaint:"ألم أسفل الظهر منذ 3 أسابيع بعد رفع جسم ثقيل.",steps:[["ما أول خطوة؟",["أخذ التاريخ المرضي والتحقق من العلامات الحمراء","بدء التمارين مباشرة","طلب أشعة لكل الحالات"],0],["ما الفحص المناسب؟",["فحص مدى حركة الفقرات القطنية والفحص العصبي","اختبار Lachman","اختبار Phalen"],0],["الانطباع الأقرب؟",["ألم ميكانيكي غير نوعي أسفل الظهر","متلازمة ذيل الفرس","اعتلال جذري مؤكد"],0],["الخطة الأولية؟",["التثقيف والحفاظ على النشاط وتمارين مناسبة","راحة تامة أسبوعين","تدخل جراحي فوري"],0]]},{id:"knee",title:"ACL Injury",patient:"محمد، 23 عاماً",complaint:"التواء الركبة أثناء مباراة مع تورم سريع وصوت فرقعة.",steps:[["ما أهم معلومة في التاريخ؟",["آلية الإصابة ووقت التورم والشعور بعدم الثبات","نوع الحذاء فقط","تاريخ الصداع"],0],["ما الاختبار السريري؟",["Lachman test","Phalen test","SLR"],0],["ما البنية المحتمل إصابتها؟",["Anterior Cruciate Ligament","Rotator cuff","Achilles tendon"],0],["ما الأولوية؟",["تقييم التورم والمدى والثبات ثم خطة تأهيل مرحلية","جري سريع","تجاهل عدم الثبات"],0]]}];
+    el.innerHTML=heading("العيادة الافتراضية","محاكاة تعليمية لاتخاذ القرار السريري، وليست بديلاً عن التقييم الطبي.")+'<div class="case-grid">'+cases.map(c=>'<button class="case-card" data-case="'+c.id+'"><span class="feature-icon">✚</span><b>'+c.title+'</b><p>'+c.patient+'</p><small>'+c.complaint+'</small><span class="case-start">ابدأ الحالة ←</span></button>').join("")+'</div><div id="caseArea"></div>';
+    el.querySelectorAll("[data-case]").forEach(b=>b.onclick=()=>runCase(cases.find(c=>c.id===b.dataset.case),el.querySelector("#caseArea")));
+  }
+  function runCase(c,box){
+    let step=0,score=0;const draw=()=>{if(step>=c.steps.length){box.innerHTML='<section class="panel result-panel"><div class="result-mark">✓</div><h2>انتهت الحالة</h2><div class="result-score">'+score+'/'+c.steps.length+'</div><p>تذكر أن القرار السريري يعتمد على جمع الأدلة وربطها، وليس التخمين.</p><button class="secondary-btn" id="restartCase">إعادة الحالة</button></section>';box.querySelector("#restartCase").onclick=()=>runCase(c,box);return}
+      const s=c.steps[step];box.innerHTML='<section class="clinic-panel"><div class="clinic-head"><span>THERASON CLINICAL SIMULATION</span><span>المرحلة '+(step+1)+' / '+c.steps.length+'</span></div><h3>'+c.title+'</h3><p>'+c.patient+'</p><div class="patient-note">'+c.complaint+'</div><h4>'+s[0]+'</h4><div class="case-options">'+s[1].map((o,i)=>'<button data-choice="'+i+'">'+o+'</button>').join("")+'</div><p class="muted">اختر القرار الأنسب للانتقال إلى المرحلة التالية.</p></section>';
+      box.querySelectorAll("[data-choice]").forEach(b=>b.onclick=()=>{const good=Number(b.dataset.choice)===s[2];if(good)score++;box.querySelectorAll("button").forEach(x=>x.disabled=true);b.classList.add(good?"correct":"incorrect");const msg=document.createElement("p");msg.className="feedback";msg.textContent=good?"قرار صحيح. أحسنت!":"ليس الاختيار الأفضل. راجع أساسيات التقييم السريري.";box.querySelector(".clinic-panel").append(msg);const next=document.createElement("button");next.className="primary-btn";next.textContent="التالي ←";next.onclick=()=>{step++;draw()};box.querySelector(".clinic-panel").append(next)});
+    };draw();
+  }
+  async function progressPage(el){
+    const [events,attempts,mastery]=await Promise.all([db.from("xp_events").select("amount,reason,created_at").eq("user_id",user.id).order("created_at",{ascending:false}).limit(15),db.from("attempts").select("id,score,submitted_at,exams(title_ar)").eq("user_id",user.id).not("submitted_at","is",null).order("submitted_at",{ascending:false}).limit(15),db.from("mastery").select("score,attempts_count,topics(name_ar)").eq("user_id",user.id)]);
+    el.innerHTML=heading("إنجازاتي","سجل نقاط الخبرة ونتائج الاختبارات ومستوى إتقان الموضوعات.")+'<div class="stat-grid"><div class="stat-card"><small>XP</small><b>'+esc(wallet.xp||0)+'</b></div><div class="stat-card"><small>المستوى</small><b>'+esc(wallet.level||1)+'</b></div><div class="stat-card"><small>العملات</small><b>'+esc(wallet.coins||0)+'</b></div></div><div class="two-col"><section class="panel"><h3>نتائج الاختبارات</h3>'+((attempts.data||[]).map(a=>'<div class="list-row"><b>'+esc(a.exams?.title_ar||"اختبار")+'</b><span>'+esc(a.score||0)+'%</span></div>').join("")||'<p class="muted">لا توجد نتائج بعد.</p>')+'</section><section class="panel"><h3>إتقان الموضوعات</h3>'+((mastery.data||[]).map(m=>'<div class="mastery-row"><b>'+esc(m.topics?.name_ar||"موضوع")+'</b><span>'+esc(Math.round(m.score))+'%</span></div>').join("")||'<p class="muted">ابدأ الاختبارات لتظهر بيانات الإتقان.</p>')+'</section></div><section class="panel"><h3>آخر نقاط الخبرة</h3>'+((events.data||[]).map(e=>'<div class="list-row"><span>'+esc(e.reason)+'</span><b>+'+esc(e.amount)+' XP</b></div>').join("")||'<p class="muted">لا توجد نقاط مسجلة بعد.</p>')+'</section>';
+  }
+  function profilePage(el){el.innerHTML=heading("ملفي الشخصي","بيانات الحساب الأكاديمي المرتبط بحساب الدخول.")+'<section class="panel profile-panel"><div class="avatar large">'+esc((profile?.display_name||"ط").slice(0,1))+'</div><h2>'+esc(profile?.display_name||"—")+'</h2><div class="profile-list"><div><small>الرقم التعريفي</small><b dir="ltr">'+esc(profile?.platform_id||"—")+'</b></div><div><small>اسم المستخدم</small><b>'+esc(profile?.username||"—")+'</b></div><div><small>الجامعة</small><b>'+esc(profile?.institutions?.name_ar||"—")+'</b></div><div><small>التخصص</small><b>'+esc(profile?.specialties?.name_ar||"—")+'</b></div><div><small>الدفعة</small><b>'+esc(profile?.cohorts?.name||"—")+'</b></div></div></section>'}
+  async function adminOverview(el){
+    const names=["institutions","student_registry","subjects","topics","questions","exams","announcements"];const counts=await Promise.all(names.map(async n=>({n,d:await q(n,"id")})));
+    el.innerHTML=heading("لوحة الإدارة","مركز متابعة وإدارة منصة THERASON.")+'<div class="admin-stat-grid">'+counts.map(x=>'<div class="stat-card"><small>'+({institutions:"الجامعات",student_registry:"سجل الطلاب",subjects:"المواد",topics:"الوحدات",questions:"الأسئلة",exams:"الاختبارات",announcements:"الإعلانات"}[x.n])+'</small><b>'+x.d.length+'</b></div>').join("")+'</div><section class="panel"><h3>إدارة المحتوى الأكاديمي</h3><p>أدر الجامعات والطلاب والمواد والوحدات وبنك الأسئلة والاختبارات والإعلانات من القائمة الجانبية. جميع التغييرات تخضع لصلاحيات قاعدة البيانات الحالية.</p></section>';
+  }
+  async function institutionsPage(el){
+    const data=await q("institutions","id,code,name_ar,name_en,city,is_active");el.innerHTML=heading("الجامعات والمؤسسات","إدارة المؤسسات التعليمية المسجلة.")+'<section class="panel"><form id="newInstitution" class="form-grid"><input name="code" placeholder="الكود 01" maxlength="2" required><input name="name_ar" placeholder="اسم الجامعة بالعربية" required><input name="name_en" placeholder="English name"><input name="city" placeholder="المدينة"><button class="primary-btn">إضافة جامعة</button></form></section><section class="panel table-panel"><div class="data-table"><div class="table-row table-head"><span>الكود</span><span>اسم الجامعة</span><span>المدينة</span><span>الحالة</span></div>'+data.map(x=>'<div class="table-row"><span>'+esc(x.code)+'</span><b>'+esc(x.name_ar)+'</b><span>'+esc(x.city||"—")+'</span><span>'+(x.is_active?"نشطة":"موقوفة")+'</span></div>').join("")+'</div></section>';
+    el.querySelector("#newInstitution").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {error}=await db.from("institutions").insert({code:f.get("code"),name_ar:f.get("name_ar"),name_en:f.get("name_en")||null,city:f.get("city")||null});if(error){toast(error.message,true);return}toast("تمت إضافة الجامعة");render()};
+  }
+  async function studentsPage(el){
+    const [registry,inst,cohorts]=await Promise.all([q("student_registry","id,platform_id,full_name,institution_id,cohort_id,claimed_at"),q("institutions","id,name_ar"),q("cohorts","id,name")]);
+    el.innerHTML=heading("سجل الطلاب","عرض أرقام الطلاب وحالة تفعيل حساباتهم.")+'<section class="panel"><div class="search-row"><input id="studentSearch" placeholder="ابحث بالاسم أو الرقم التعريفي"><span>'+registry.length+' طالب</span></div><div class="data-table" id="registryTable"><div class="table-row table-head"><span>الرقم</span><span>اسم الطالب</span><span>الجامعة</span><span>التفعيل</span></div>'+registry.map(x=>'<div class="table-row student-row"><span dir="ltr">'+esc(x.platform_id)+'</span><b>'+esc(x.full_name)+'</b><span>'+esc(inst.find(i=>i.id===x.institution_id)?.name_ar||"—")+'</span><span>'+(x.claimed_at?"مفعّل":"بانتظار التفعيل")+'</span></div>').join("")+'</div></section>';
+    el.querySelector("#studentSearch").oninput=e=>el.querySelectorAll(".student-row").forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(e.target.value.toLowerCase()));
+  }
+  async function academicPage(el){
+    const [spec,subjects,inst,cohorts]=await Promise.all([q("specialties","id,name_ar"),q("subjects","id,name_ar,name_en,academic_level,specialty_id"),q("institutions","id,name_ar"),q("cohorts","id,name")]);
+    el.innerHTML=heading("المواد والوحدات","إدارة التخصصات والمواد والوحدات التعليمية.")+'<div class="two-col"><section class="panel"><h3>إضافة مادة</h3><form id="addSubject" class="stack-form"><input name="name_ar" placeholder="اسم المادة بالعربية" required><input name="name_en" placeholder="Subject name in English"><select name="specialty_id" required><option value="">اختر التخصص</option>'+spec.map(x=>'<option value="'+x.id+'">'+esc(x.name_ar)+'</option>').join("")+'</select><input name="academic_level" type="number" min="1" max="6" placeholder="المستوى الأكاديمي"><button class="primary-btn">حفظ المادة</button></form></section><section class="panel"><h3>إضافة وحدة تعليمية</h3><form id="addTopic" class="stack-form"><select name="subject_id" required><option value="">اختر المادة</option>'+subjects.map(x=>'<option value="'+x.id+'">'+esc(x.name_ar)+'</option>').join("")+'</select><input name="name_ar" placeholder="اسم الوحدة بالعربية" required><input name="name_en" placeholder="Topic name in English"><input name="position" type="number" value="0" placeholder="الترتيب"><button class="primary-btn">حفظ الوحدة</button></form></section></div><section class="panel"><h3>المواد الحالية</h3>'+subjects.map(x=>'<div class="list-row"><b>'+esc(x.name_ar)+'</b><span>'+esc(spec.find(s=>s.id===x.specialty_id)?.name_ar||"")+' · المستوى '+esc(x.academic_level||"—")+'</span></div>').join("")+'</section>';
+    el.querySelector("#addSubject").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {error}=await db.from("subjects").insert({name_ar:f.get("name_ar"),name_en:f.get("name_en")||null,specialty_id:f.get("specialty_id"),academic_level:f.get("academic_level")?Number(f.get("academic_level")):null});if(error){toast(error.message,true);return}toast("تمت إضافة المادة");render()};
+    el.querySelector("#addTopic").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {error}=await db.from("topics").insert({subject_id:f.get("subject_id"),name_ar:f.get("name_ar"),name_en:f.get("name_en")||null,position:Number(f.get("position")||0)});if(error){toast(error.message,true);return}toast("تمت إضافة الوحدة");render()};
+  }
+  async function questionsPage(el){
+    const [topics,subjects]=await Promise.all([db.from("topics").select("id,name_ar,subject_id,subjects(name_ar)").order("name_ar"),q("subjects","id,name_ar")]);
+    el.innerHTML=heading("بنك الأسئلة","إضافة أسئلة اختيار من متعدد وإدارتها ومراجعتها.")+'<section class="panel"><form id="newQuestion" class="stack-form"><select name="topic_id" required><option value="">اختر الوحدة</option>'+(topics.data||[]).map(t=>'<option value="'+t.id+'">'+esc(t.subjects?.name_ar)+" — "+esc(t.name_ar)+'</option>').join("")+'</select><textarea name="stem_ar" placeholder="نص السؤال بالعربية" required></textarea><textarea name="stem_en" placeholder="Question in English"></textarea><div class="form-grid"><input name="a" placeholder="الخيار الأول" required><input name="b" placeholder="الخيار الثاني" required><input name="c" placeholder="الخيار الثالث"><input name="d" placeholder="الخيار الرابع"></div><label>الإجابة الصحيحة</label><select name="correct" required><option value="0">الخيار الأول</option><option value="1">الخيار الثاني</option><option value="2">الخيار الثالث</option><option value="3">الخيار الرابع</option></select><textarea name="explanation_ar" placeholder="شرح الإجابة"></textarea><select name="status"><option value="draft">مسودة</option><option value="published">نشر مباشرة</option></select><button class="primary-btn">حفظ السؤال</button></form></section>';
+    el.querySelector("#newQuestion").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const opts=[f.get("a"),f.get("b"),f.get("c"),f.get("d")].filter(Boolean);const {data:qq,error}=await db.from("questions").insert({topic_id:f.get("topic_id"),stem_ar:f.get("stem_ar"),stem_en:f.get("stem_en")||null,explanation_ar:f.get("explanation_ar")||null,status:f.get("status"),created_by:user.id}).select("id").single();if(error){toast(error.message,true);return}const rows=opts.map((v,i)=>({question_id:qq.id,text_ar:v,position:i}));const {data:oo,error:oe}=await db.from("question_options").insert(rows).select("id");if(oe){toast("تم حفظ السؤال لكن تعذر حفظ الخيارات: "+oe.message,true);return}const {error:ae}=await db.from("question_answers").insert({question_id:qq.id,option_id:oo[Number(f.get("correct"))]?.id});if(ae){toast("السؤال محفوظ لكن تعذر تعيين الإجابة: "+ae.message,true);return}toast("تم حفظ السؤال");e.target.reset()};
+  }
+  async function announcementsPage(el){
+    const data=await q("announcements","id,title,body,created_at,institution_id");const inst=await q("institutions","id,name_ar");
+    el.innerHTML=heading("الإعلانات","نشر أخبار وتنبيهات للطلاب في المؤسسة.")+'<section class="panel"><form id="newNotice" class="stack-form"><select name="institution_id" required><option value="">اختر المؤسسة</option>'+inst.map(x=>'<option value="'+x.id+'">'+esc(x.name_ar)+'</option>').join("")+'</select><input name="title" placeholder="عنوان الإعلان" required><textarea name="body" placeholder="نص الإعلان"></textarea><button class="primary-btn">نشر الإعلان</button></form></section><section class="panel">'+data.map(x=>'<article class="notice"><b>'+esc(x.title)+'</b><p>'+esc(x.body||"")+'</p></article>').join("")+'</section>';
+    el.querySelector("#newNotice").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {error}=await db.from("announcements").insert({institution_id:f.get("institution_id"),title:f.get("title"),body:f.get("body")||null,created_by:user.id});if(error){toast(error.message,true);return}toast("تم نشر الإعلان");render()};
+  }
+  async function rolesPage(el){
+    const data=await db.from("user_roles").select("user_id,role,scope_type,created_at").order("created_at",{ascending:false});
+    el.innerHTML=heading("الصلاحيات","عرض الأدوار الممنوحة. إدارة الصلاحيات الحساسة تتم من سياسات قاعدة البيانات.")+'<section class="panel"><div class="data-table"><div class="table-row table-head"><span>معرّف الحساب</span><span>الدور</span><span>النطاق</span></div>'+((data.data||[]).map(x=>'<div class="table-row"><span dir="ltr">'+esc(x.user_id.slice(0,8))+'…</span><b>'+esc(x.role)+'</b><span>'+esc(x.scope_type)+'</span></div>').join(""))+'</div></section>';
+  }
+  logoutBtn.onclick=signOut;
+  db.auth.getSession().then(({data})=>data.session?loadAccount():login());
 })();
